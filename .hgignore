@@ -1,0 +1,6 @@
+syntax: glob
+
+.gradle/*
+.gradle*
+.*.swp
+build/*

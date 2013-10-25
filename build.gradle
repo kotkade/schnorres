@@ -1,0 +1,34 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven { url "http://clojars.org/repo" }
+    }
+
+    dependencies {
+        classpath "de.kotka.gradle:gradle-plugin:1.1.0"
+        classpath "clojuresque:clojuresque:1.6.0-SNAPSHOT"
+    }
+}
+
+version = "0.1.0-SNAPSHOT"
+group   = "kotka.schnorres"
+description = "A re-implementation of Moustache for aleph"
+
+ext.kotka = [
+    repository:     "kotkade/schnorres",
+    wrapperVersion: "1.8"
+]
+
+apply plugin: "kotka"
+apply plugin: "clojure"
+
+repositories {
+    mavenCentral()
+    maven { url "http://clojars.org/repo" }
+}
+
+dependencies {
+    compile "org.clojure:clojure:1.5.1"
+
+    development "org.clojure:tools.nrepl:0.2.3"
+}
