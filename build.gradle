@@ -30,6 +30,7 @@ repositories {
 dependencies {
     compile "org.clojure:clojure:1.5.1"
     compile "ring:ring-core:1.2.0"
+    compile "lamina:lamina:0.5.0"
 
     development "org.clojure:tools.nrepl:0.2.3"
 }

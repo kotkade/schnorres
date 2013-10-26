@@ -14,6 +14,7 @@
   "Moustache is a micro web framework/internal DSL to wire Ring handlers and middlewares.
   Schnorres is Moustache for aleph."
   (:require
+    [lamina.core :as lamina]
     [ring.middleware.params :as p]
     [ring.middleware.keyword-params :as kwp]))
 
@@ -53,23 +54,37 @@
       :else     [route nil])
     [[""] nil]))
 
+(defmacro respond-constantly
+  [x]
+  `(fn [chan# _req#] (lamina/enqueue chan# ~x)))
+
+(defn respond-constantly*
+  [x]
+  (respond-constantly x))
+
 (def pass
   "Handler that causes the framework to fall through the next handler"
-  (constantly nil))
+  (respond-constantly* nil))
+
+(def not-found-response
+  {:status 404})
 
 (def not-found
   "Handler that always return a 404 Not Found status."
-  (constantly {:status 404}))
+  (respond-constantly* not-found-response))
 
 (defn alter-request
   "Middleware that passes (apply f request args) to handler instead of request."
   [handler f & args]
-  #(handler (apply f % args)))
+  (fn [chan req] (handler chan (apply f req args))))
 
 (defn alter-response
-  "Middleware that returns (apply f response args) instead of response."
+  "Middleware that maps #(apply f % args) over the response channel."
   [handler f & args]
-  #(apply f (handler %) args))
+  (fn [chan req]
+    (let [result-chan (lamina/channel)]
+      (lamina/join (lamina/map* #(apply f % args) result-chan) chan)
+      (handler result-chan req))))
 
 (defn- regex?
   [x]
@@ -117,18 +132,26 @@
   when called on the request map."
   [h pred mw & args]
   (let [wh (apply mw h args)]
-    (fn [req]
-      ((if (pred req) h wh) req))))
+    (fn [chan req]
+      ((if (pred req) h wh) chan req))))
+
+(defn wrap-ring-middleware
+  [& middleware]
+  (let [mw (apply comp middleware)]
+    (fn [handler]
+      (let [inner-handler (mw (fn [req] (handler (::channel req) req)))]
+        (fn [chan req]
+          (inner-handler (assoc req ::channel chan)))))))
 
 (defn- wrap-params
   [handler params]
   (let [params (if (vector? params) {:keys params} params)]
     (if params
       `(apply-middleware-when-not
-         (fn  [request#]
+         (fn  [chan# request#]
            (let [~params (:params request#)]
-             (~handler request#)))
-         :params (comp p/wrap-params kwp/wrap-keyword-params))
+             (~handler chan# request#)))
+         :params (wrap-ring-middleware p/wrap-params kwp/wrap-keyword-params))
       handler)))
 
 (declare compile-modern-router compile-method-dispatch-map)
@@ -141,7 +164,7 @@
         methods  (filter (comp keyword? key) m)
         method-dispatch (when (seq methods)
                           (compile-method-dispatch-map (into {} methods)))
-        response (when response `(fn [_#] ~response))
+        response (when response `(fn [chan# _#] (lamina/enqueue chan# ~response)))
         here-handler (or method-dispatch handler response (m []))
         routes   (if (and here-handler (seq routes))
                    (assoc (into {} routes) [] here-handler)
@@ -151,7 +174,7 @@
                    here-handler)]
     (-> handler
       (wrap-params params)
-      (wrap-middlewares  middlewares))))
+      (wrap-middlewares middlewares))))
 
 (defn- compile-handler-shorthand
   [form]
@@ -181,43 +204,62 @@
   [resp]
   (or (nil? resp) (= (:status resp) 404)))
 
-(defmacro -or404
-  ([] nil)
-  ([form] form)
-  ([form & forms]
-  `(let [resp# ~form]
-     (if (-nil-or-404? resp#)
-       (-or404 ~@forms)
-       resp#))))
-
 (defn- compile-modern-router
   [forms]
   (let [segments     (gensym "segments")
+        propagator   (gensym "propagator")
         req          (gensym "req")
         routes+forms (partition 2 forms)
-        emit-match   (fn [route+form]
-                       `(when-let [handler# ~(compile-route segments route+form)]
-                          (handler# ~req)))]
-    `(fn [~req]
-       (let [~segments (path-info-segments ~req)]
-         (or (-or404 ~@(map emit-match routes+forms))
-             (not-found))))))
+        emit-form    (fn [route+form]
+                       `(when-let [handler# ~(compile-route segments
+                                                            route+form)]
+                          (let [result-chan# (lamina/channel)]
+                            (handler# result-chan# ~req)
+                            (lamina/read-channel result-chan#))))
+        emit-pipe    (fn [step]
+                       `(fn [value#]
+                          (if (-nil-or-404? value#)
+                            ~step
+                            (lamina/redirect ~propagator value#))))]
+    `(fn [chan# ~req]
+       (let [~segments   (path-info-segments ~req)
+             ~propagator (lamina/pipeline (partial lamina/enqueue chan#))]
+         (lamina/run-pipeline nil
+           ~@(map (comp emit-pipe emit-form) routes+forms)
+           ~(emit-pipe `not-found-response)
+           ~propagator)))))
 
 (defn- compile-router
   [forms]
   (let [segments     (gensym "segments")
+        propagator   (gensym "propagator")
         req          (gensym "req")
         routes+forms (partition 2 forms)
         default-form ((apply array-map forms) '[&])
         routes+forms (if default-form
                        routes+forms
                        (concat routes+forms [['[&] `not-found]]))
-        emit-match   (fn [route+form]
-                       `(when-let [handler# ~(compile-route segments route+form)]
-                          (handler# ~req)))]
-    `(fn [~req]
-       (let [~segments (path-info-segments ~req)]
-         (or ~@(map emit-match routes+forms))))))
+        emit-form    (fn [route+form]
+                       `(when-let [handler# ~(compile-route segments
+                                                            route+form)]
+                          (let [result-chan# (lamina/channel)]
+                            (handler# result-chan# ~req)
+                            (lamina/read-channel result-chan#))))
+        emit-pipe    (fn [step]
+                       `(fn [value#]
+                          (if (nil? value#)
+                            ~step
+                            (lamina/redirect ~propagator value#))))]
+    `(fn [chan# ~req]
+       (let [~segments   (path-info-segments ~req)
+             ~propagator (lamina/pipeline (partial lamina/enqueue chan#))]
+           (lamina/run-pipeline nil
+             ~@(map (comp emit-pipe emit-form) routes+forms)
+             ~propagator)))))
+
+(defn method-not-allowed-handler
+  [allow]
+  (respond-constantly* {:status 405 :headers {"Allow" allow}}))
 
 (defn- method-not-allowed-form
   [allowed-methods]
@@ -225,7 +267,7 @@
                 (map #(.toUpperCase (name %) java.util.Locale/ENGLISH))
                 (interpose ", ")
                 (apply str))]
-    `(constantly {:status 405 :headers {"Allow" ~allow}})))
+    `(method-not-allowed-handler ~allow)))
 
 (defn- compile-method-dispatch-map
   [spec]
@@ -234,10 +276,10 @@
         else-form (if else-form
                     (compile-handler-shorthand else-form)
                     (method-not-allowed-form (keys spec)))]
-    `(fn [req#]
+    `(fn [chan# req#]
        ((case (:request-method req#)
           ~@(mapcat (fn [[k v]] [k (compile-handler-shorthand v)]) spec)
-          ~else-form) req#))))
+          ~else-form) chan# req#))))
 
 (defn- compile-method-dispatch
   [spec]
@@ -247,15 +289,17 @@
   "Returns a 200 response map whose content-type is text and body is
   (apply str args)."
   [& args]
-  {:status 200 :headers {"Content-Type" "text/plain;charset=UTF-8"} :body (apply str args)})
+  {:status  200
+   :headers {"Content-Type" "text/plain;charset=UTF-8"}
+   :body    (apply str args)})
 
 (defn- compile-text
   [s]
-  `(fn [_#] (text ~@s)))
+  `(respond-constantly (text ~@s)))
 
 (defn compile-response-map
   [m]
-  `(fn [_#] ~m))
+  `(respond-constantly ~m))
 
 (defn- legacy-app
   [forms]
@@ -288,7 +332,6 @@
   (if (keyword? (first forms))
     (compile-handler-map-shorthand (apply hash-map forms))
     (legacy-app forms)))
-
 
 (defn delegate
   "Take a function and all the normal arguments to f but the first, and returns
