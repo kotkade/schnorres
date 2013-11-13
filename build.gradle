@@ -10,7 +10,7 @@ buildscript {
     }
 }
 
-version = "0.1.0"
+version = "0.2.0-SNAPSHOT"
 group   = "kotka.schnorres"
 description = "A re-implementation of Moustache for aleph"
 
