@@ -62,6 +62,18 @@
   [x]
   (respond-constantly x))
 
+(defmacro fail-constantly
+  [x]
+  `(fn [chan# _req#] (lamina/error chan# ~x)))
+
+(defn fail-constantly*
+  [x]
+  (fail-constantly x))
+
+(defn propagate-error
+  [chan]
+  (partial lamina/error chan))
+
 (def pass
   "Handler that causes the framework to fall through the next handler"
   (respond-constantly* nil))
@@ -71,7 +83,7 @@
 
 (def not-found
   "Handler that always return a 404 Not Found status."
-  (respond-constantly* not-found-response))
+  (fail-constantly* not-found-response))
 
 (defn alter-request
   "Middleware that passes (apply f request args) to handler instead of request."
@@ -82,11 +94,11 @@
   "Middleware that maps #(apply f % args) over the response channel."
   [handler f & args]
   (fn [chan req]
-    (let [result-chan (lamina/result-channel)]
-      (handler result-chan req)
-      (lamina/run-pipeline result-chan
-        #(apply f % args)
-        (partial lamina/enqueue chan)))))
+    (doto (lamina/result-channel)
+      (handler req)
+      (lamina/on-realized
+        #(lamina/enqueue chan (apply f % args))
+        (propagate-error chan)))))
 
 (defn- regex?
   [x]
@@ -209,59 +221,69 @@
 (defn- compile-modern-router
   [forms]
   (let [segments     (gensym "segments")
-        propagator   (gensym "propagator")
-        req          (gensym "req")
         routes+forms (partition 2 forms)
-        emit-form    (fn [route+form]
-                       `(when-let [handler# ~(compile-route segments
+        steps        (repeatedly (count routes+forms) #(gensym "step"))
+        routes+forms (reverse routes+forms)
+        emit-step    (fn [route+form next-step]
+                       `(fn [chan# req#]
+                          (if-let [handler# ~(compile-route segments
                                                             route+form)]
-                          (let [result-chan# (lamina/result-channel)]
-                            (handler# result-chan# ~req)
-                            result-chan#)))
-        emit-pipe    (fn [step]
-                       `(fn [value#]
-                          (if (-nil-or-404? value#)
-                            ~step
-                            (lamina/redirect ~propagator value#))))]
-    `(fn [chan# ~req]
-       (let [~segments   (path-info-segments ~req)
-             ~propagator (lamina/pipeline (partial lamina/enqueue chan#))]
-         (lamina/run-pipeline nil
-           ~@(map (comp emit-pipe emit-form) routes+forms)
-           ~(emit-pipe `not-found-response)
-           ~propagator)))))
+                            (doto (lamina/result-channel)
+                              (handler# req#)
+                              (lamina/on-realized
+                                (fn [value#]
+                                  (if (nil? value#)
+                                    (~next-step chan# req#)
+                                    (lamina/enqueue chan# value#)))
+                                (fn [err#]
+                                  (if (= (:status err#) 404)
+                                    (~next-step chan# req#)
+                                    (lamina/error chan# err#)))))
+                            (~next-step chan# req#))))]
+    `(fn [chan# req#]
+       (let [~segments (path-info-segments req#)
+             ~@(->> `not-found
+                 (conj steps)
+                 (map emit-step routes+forms)
+                 (interleave steps))]
+         (~(last steps) chan# req#)))))
 
 (defn- compile-router
   [forms]
   (let [segments     (gensym "segments")
-        propagator   (gensym "propagator")
-        req          (gensym "req")
+        bottom       (gensym "bottom")
         routes+forms (partition 2 forms)
         default-form ((apply array-map forms) '[&])
         routes+forms (if default-form
                        routes+forms
                        (concat routes+forms [['[&] `not-found]]))
-        emit-form    (fn [route+form]
-                       `(when-let [handler# ~(compile-route segments
+        steps        (repeatedly (count routes+forms) #(gensym "step"))
+        routes+forms (reverse routes+forms)
+        emit-step    (fn [route+form next-step]
+                       `(fn [chan# req#]
+                          (if-let [handler# ~(compile-route segments
                                                             route+form)]
-                          (let [result-chan# (lamina/result-channel)]
-                            (handler# result-chan# ~req)
-                            result-chan#)))
-        emit-pipe    (fn [step]
-                       `(fn [value#]
-                          (if (nil? value#)
-                            ~step
-                            (lamina/redirect ~propagator value#))))]
-    `(fn [chan# ~req]
-       (let [~segments   (path-info-segments ~req)
-             ~propagator (lamina/pipeline (partial lamina/enqueue chan#))]
-           (lamina/run-pipeline nil
-             ~@(map (comp emit-pipe emit-form) routes+forms)
-             ~propagator)))))
+                            (doto (lamina/result-channel)
+                              (handler# req#)
+                              (lamina/on-realized
+                                (fn [value#]
+                                  (if (nil? value#)
+                                    (~next-step chan# req#)
+                                    (lamina/enqueue chan# value#)))
+                                (propagate-error chan#)))
+                            (~next-step chan# req#))))]
+    `(fn [chan# req#]
+       (let [~segments (path-info-segments req#)
+             ~bottom   (fn [chan# req#] (lamina/enqueue chan# nil))
+             ~@(->> bottom
+                 (conj steps)
+                 (map emit-step routes+forms)
+                 (interleave steps))]
+         (~(last steps) chan# req#)))))
 
 (defn method-not-allowed-handler
   [allow]
-  (respond-constantly* {:status 405 :headers {"Allow" allow}}))
+  (fail-constantly* {:status 405 :headers {"Allow" allow}}))
 
 (defn- method-not-allowed-form
   [allowed-methods]
@@ -301,7 +323,9 @@
 
 (defn compile-response-map
   [m]
-  `(respond-constantly ~m))
+  (if (and (contains? m :status) (<= 400 (:status m)))
+    `(fail-constantly ~m)
+    `(respond-constantly ~m)))
 
 (defn- legacy-app
   [forms]

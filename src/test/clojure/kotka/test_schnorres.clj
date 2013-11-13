@@ -11,9 +11,12 @@
 
 (defn run-request
   [handler req]
-  (let [chan (lamina/result-channel)]
-    (handler chan req)
-    @chan))
+  (let [result         (promise)
+        deliver-result (partial deliver result)]
+    (doto (lamina/result-channel)
+      (handler req)
+      (lamina/on-realized deliver-result deliver-result))
+    @result))
 
 (defn request
   [handler uri & options]
