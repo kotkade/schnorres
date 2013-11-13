@@ -82,9 +82,9 @@
   "Middleware that maps #(apply f % args) over the response channel."
   [handler f & args]
   (fn [chan req]
-    (let [result-chan (lamina/channel)]
+    (let [result-chan (lamina/result-channel)]
       (handler result-chan req)
-      (lamina/run-pipeline (read-channel result-chan)
+      (lamina/run-pipeline result-chan
         #(apply f % args)
         (partial lamina/enqueue chan)))))
 
@@ -215,9 +215,9 @@
         emit-form    (fn [route+form]
                        `(when-let [handler# ~(compile-route segments
                                                             route+form)]
-                          (let [result-chan# (lamina/channel)]
+                          (let [result-chan# (lamina/result-channel)]
                             (handler# result-chan# ~req)
-                            (lamina/read-channel result-chan#))))
+                            result-chan#)))
         emit-pipe    (fn [step]
                        `(fn [value#]
                           (if (-nil-or-404? value#)
@@ -244,9 +244,9 @@
         emit-form    (fn [route+form]
                        `(when-let [handler# ~(compile-route segments
                                                             route+form)]
-                          (let [result-chan# (lamina/channel)]
+                          (let [result-chan# (lamina/result-channel)]
                             (handler# result-chan# ~req)
-                            (lamina/read-channel result-chan#))))
+                            result-chan#)))
         emit-pipe    (fn [step]
                        `(fn [value#]
                           (if (nil? value#)

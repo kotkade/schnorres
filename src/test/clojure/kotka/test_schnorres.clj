@@ -11,9 +11,9 @@
 
 (defn run-request
   [handler req]
-  (let [chan (lamina/channel)]
+  (let [chan (lamina/result-channel)]
     (handler chan req)
-    @(lamina/read-channel chan)))
+    @chan))
 
 (defn request
   [handler uri & options]
