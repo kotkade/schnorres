@@ -25,11 +25,12 @@ See [syntax.html](http://moustache.cgrand.net/syntax.html).
 
 <http://gist.github.com/109955>
 
-## The <code>app</code> macro
+## The app macro
 
 A `(app ...)` form returns a Ring application (handler).
 
-There's currently four usages of @app@:
+There's currently four usages of `app`:
+
  * to wrap a Ring handler,
  * to define routes,
  * to dispatch on HTTP methods
@@ -48,7 +49,7 @@ You can simply wrap a handler into middlewares:
     ; equivalent to (-> my-handler (middleware2 arg) middleware1)
     ; ie (middleware1 (middleware2 my-handler arg))
 
-Note that *every usage of `app` supports middleware-wrapping*.
+Note that every usage of `app` supports middleware-wrapping.
 
 ### Routes
 
@@ -62,7 +63,7 @@ you write vectors of decoded segments (eg `["Thank you Mario" "But our princess 
     (app ["foo" ""] my-handler) ; will route requests to "/foo/" to my-handler
     (app ["foo" "bar"] my-handler) ; will route requests to "/foo/bar" to my-handler
     (app ["foo" &] my-handler) ; will route requests to "/foo", "/foo/", "/foo/bar" and "/foo/bar/baz/" to my-handler (and will chop "/foo" off from the uri)
-    (app ["foo" name] my-handler) ; will route requests to "/foo/", "/foo/bar" to my-handler and bind @name@ (a local) to the matched segment (eg "" or "bar")
+    (app ["foo" name] my-handler) ; will route requests to "/foo/", "/foo/bar" to my-handler and bind "name" (a local) to the matched segment (eg "" or "bar")
     (app ["foo" x & xs] my-handler) ; "/foo/bar/baz/bloom" will bind x to bar and xs to ["baz" "bloom"]
 
 You can catch all URIs with the route `[&]`. If you don't provide a
@@ -90,20 +91,20 @@ associated handler does not return nil.
 
 That's why:
 
-   (app
-     ["foo" &] (app ["bar"] handler1)
-     ["foo" "baz"] handler2)
+    (app
+      ["foo" &] (app ["bar"] handler1)
+      ["foo" "baz"] handler2)
 
 returns a 404 for /foo/baz: the nested `app` form returns a 404 for /baz and
 this 404 bubbles up.
 
 You can prevent such behavior by writing:
 
-   (app
-     ["foo" &] (app
-                 ["bar"] handler1
-                 [&] pass)
-     ["foo" "baz"] handler2)
+    (app
+      ["foo" &] (app
+                  ["bar"] handler1
+                  [&] pass)
+      ["foo" "baz"] handler2)
 
 ### Method dispatch
 
