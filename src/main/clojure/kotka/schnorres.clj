@@ -83,8 +83,10 @@
   [handler f & args]
   (fn [chan req]
     (let [result-chan (lamina/channel)]
-      (lamina/join (lamina/map* #(apply f % args) result-chan) chan)
-      (handler result-chan req))))
+      (handler result-chan req)
+      (lamina/run-pipeline (read-channel result-chan)
+        #(apply f % args)
+        (partial lamina/enqueue chan)))))
 
 (defn- regex?
   [x]
